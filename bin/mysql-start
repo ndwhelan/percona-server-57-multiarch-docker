@@ -1,0 +1,76 @@
+#!/bin/bash
+set -e
+
+readonly MYSQL_DATA_DIR_LOCAL="/var/lib/mysql/"
+readonly MYSQLD_RUN_DIR="/var/run/mysqld"
+readonly mysql_group="mysql"
+readonly mysql_user="mysql"
+
+start() {
+    _kill_mysql
+
+    # Check for success and run some diagnostics on failure before exiting
+    if [[ $(/usr/sbin/mysqld --daemonize --pid-file=${PID_FILE} --datadir="${MYSQL_DATA_DIR_LOCAL}" >/dev/null 2>&1; echo $?) -ne 0 ]]; then
+        _run_diagnostics
+        exit 1
+    fi
+
+    echo -n "Waiting for mysqld to complete startup ."
+    sleep 2
+    local count=0
+    while [[ ${count} -lt 30 && $(mysqladmin status >/dev/null 2>&1; echo $?) -ne 0 ]]; do
+        echo -n "."
+        sleep 1
+        count=$((count + 1))
+    done
+    echo
+}
+
+trap _shutdown SIGTERM
+trap _shutdown INT
+
+if [ ! -d "${MYSQL_DATA_DIR_LOCAL}performance_schema" ]; then
+    echo "MySQL Install not found in ${MYSQL_DATA_DIR_LOCAL} attempting mysqld initialize"
+    # Without --initialize-insecure 5.7 generates a random root password and stores in the
+    # error log, makes automating installs a little tricker
+    /usr/sbin/mysqld --initialize-insecure --user=${mysql_user} --datadir="${MYSQL_DATA_DIR_LOCAL}"
+
+    echo "Starting MySQL daemon"
+    start
+else
+    echo "MySQL install found in ${MYSQL_DATA_DIR_LOCAL}. Attempting upgrade."
+    chown -R ${mysql_user}:${mysql_user} "${MYSQL_DATA_DIR_LOCAL}"
+
+    echo "Starting MySQL daemon"
+    start
+
+    echo "Upgrading MySQL tables"
+    # mysql_upgrade exits with status code 2 if the database has already been upgraded which we do not want to fail this script
+    set +e
+    mysql_upgrade
+    upgrade_status=$(echo $?)
+    set -e
+    if [[ ${upgrade_status} -ne 0 ]]; then
+        if [[ ${upgrade_status} -eq 2 ]]; then
+            echo "MySQL tables have already been upgraded. Continuing with setup..."
+        else
+            echo "Error upgrading MySQL tables!"
+            exit 1
+        fi
+    fi
+
+    echo "Restarting MySQL daemon after upgrade"
+    start
+fi
+
+# If this isn't called sometimes mysql.sock isn't created yet and the connection fails
+while [[ $(mysql -u root mysql -e "select 1" > /dev/null; echo $?) != 0 ]]; do
+    sleep 1
+done
+
+echo "Outputing error logs"
+tail -f /var/lib/mysql/error.log &
+TAIL_PID=$!
+
+# Allow us to kill tail when shutdown hook fires
+wait ${TAIL_PID}
