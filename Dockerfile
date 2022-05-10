@@ -119,4 +119,6 @@ COPY /bin/mysql-start /usr/local/bin/mysql-start
 # COPY /bin/mysql-stop /usr/local/bin/mysql-stop
 # COPY /conf/my.cnf /etc/my.cnf
 
+LABEL org.opencontainers.image.source="https://github.com/ndwhelan/percona-server-57-multiarch-docker"
+
 CMD ["mysql-start"]
